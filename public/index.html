@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WhatsApp QR Code</title>
+    <style>
+        body { 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            margin: 0; 
+            font-family: Arial, sans-serif; 
+        }
+        #qr-container {
+            text-align: center;
+        }
+        #qr-image {
+            max-width: 300px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="qr-container">
+        <h2>WhatsApp QR Code</h2>
+        <img id="qr-image" alt="WhatsApp QR Code">
+        <p id="status">Checking QR status...</p>
+    </div>
+
+    <script>
+        function checkQRStatus() {
+            fetch('/qr-status')
+                .then(response => response.json())
+                .then(data => {
+                    const qrImage = document.getElementById('qr-image');
+                    const statusText = document.getElementById('status');
+                    
+                    if (data.qrAvailable) {
+                        qrImage.src = data.qrPath;
+                        qrImage.style.display = 'block';
+                        statusText.textContent = 'Scan QR Code to connect';
+                    } else {
+                        qrImage.style.display = 'none';
+                        statusText.textContent = 'No QR code available';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.getElementById('status').textContent = 'Error checking QR status';
+                });
+        }
+
+        // Check QR status initially and then every 5 seconds
+        checkQRStatus();
+        setInterval(checkQRStatus, 5000);
+    </script>
+</body>
+</html>
