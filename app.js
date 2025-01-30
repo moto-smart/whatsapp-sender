@@ -88,7 +88,7 @@ if (!fs.existsSync(path.join(__dirname, 'public'))) {
 
 connectToWhatsApp();
 
-const PORT = process.env.PORT || 3002;
-app.listen(PORT, () => {
+const PORT = process.env.PORT || 3003;
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
 });
