@@ -1,4 +1,6 @@
 const express = require('express');
+const multer = require('multer');
+const upload = multer();
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const fs = require('fs');
@@ -6,7 +8,7 @@ const path = require('path');
 
 const app = express();
 app.use(express.json());
-app.use(express.static('public')); 
+app.use(express.static('public'));
 
 let sock;
 let currentQR = null;
@@ -61,7 +63,8 @@ app.get('/qr-status', (req, res) => {
     });
 });
 
-app.post('/send-message', async (req, res) => {
+app.post('/send-message', upload.none(), async (req, res) => {
+    console.log('Enviando mensaje:', req.body);
     const { phone, message } = req.body;
     
     if (!phone || !message) {
