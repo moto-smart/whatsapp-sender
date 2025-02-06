@@ -5,6 +5,7 @@ const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = requi
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const cron = require('node-cron');
 
 const app = express();
 app.use(express.json());
@@ -54,6 +55,61 @@ async function connectToWhatsApp() {
     sock.ev.on('creds.update', saveCreds)
 }
 
+// Function to save message record
+function saveMessageRecord(phone, sender, message) {
+    const record = {
+        phone,
+        timestamp: new Date().toISOString(),
+        sender,
+        message
+    };
+
+    const filePath = path.join(__dirname, 'messageRecords.json');
+    let records = [];
+
+    if (fs.existsSync(filePath)) {
+        const data = fs.readFileSync(filePath);
+        records = JSON.parse(data);
+    }
+
+    records.push(record);
+    fs.writeFileSync(filePath, JSON.stringify(records, null, 2));
+}
+
+// Function to count messages sent today
+function countMessagesSentToday() {
+    const filePath = path.join(__dirname, 'messageRecords.json');
+    if (!fs.existsSync(filePath)) {
+        return 0;
+    }
+
+    const data = fs.readFileSync(filePath);
+    const records = JSON.parse(data);
+    const today = new Date().toISOString().split('T')[0];
+
+    return records.filter(record => record.timestamp.startsWith(today) && record.sender).length;
+}
+
+// Function to update message record
+function updateMessageRecord(phone, message) {
+    const filePath = path.join(__dirname, 'messageRecords.json');
+    if (!fs.existsSync(filePath)) {
+        return;
+    }
+
+    const data = fs.readFileSync(filePath);
+    let records = JSON.parse(data);
+
+    records = records.map(record => {
+        if (record.phone === phone && record.message === message && !record.sender) {
+            record.sender = true;
+        }
+        return record;
+    });
+
+    fs.writeFileSync(filePath, JSON.stringify(records, null, 2));
+}
+
 // Route to get QR code status
 app.get('/qr-status', (req, res) => {
     const qrExists = fs.existsSync(path.join(__dirname, 'public', 'qr-code.png'));
@@ -65,18 +121,29 @@ app.get('/qr-status', (req, res) => {
 
 app.post('/send-message', upload.none(), async (req, res) => {
     console.log('Enviando mensaje:', req.body);
-    const { phone, message } = req.body;
+    const { phone, message, limitOfMessages } = req.body;
     
     if (!phone || !message) {
         return res.status(400).json({ error: 'Se requieren tanto el teléfono como el mensaje' });
+    }
+
+    const messagesSentToday = countMessagesSentToday();
+    console.log('Mensajes enviados hoy:', messagesSentToday);
+    console.log('Límite de mensajes:', limitOfMessages);
+    console.log((messagesSentToday >= limitOfMessages) )
+    if (messagesSentToday >= limitOfMessages) {
+        saveMessageRecord(phone, false, message);
+        return res.status(429).json({ error: 'Límite de mensajes diarios alcanzado' });
     }
     
     try {
         const formattedPhone = `${phone}@s.whatsapp.net`;
         await sock.sendMessage(formattedPhone, { text: message });
+        saveMessageRecord(phone, true, message);
         res.json({ success: true, message: 'Mensaje enviado' });
     } catch (error) {
         console.error('Error al enviar mensaje:', error);
+        saveMessageRecord(phone, false, message);
         res.status(500).json({ error: 'Error al enviar mensaje' });
     }
 });
@@ -91,4 +158,29 @@ connectToWhatsApp();
 const PORT = process.env.PORT || 3003;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
+});
+
+// Cron job to resend messages with sender=false
+cron.schedule('0 8 * * *', async () => {
+    console.log('Ejecutando tarea cron para reenviar mensajes no enviados');
+    const filePath = path.join(__dirname, 'messageRecords.json');
+    if (!fs.existsSync(filePath)) {
+        return;
+    }
+
+    const data = fs.readFileSync(filePath);
+    const records = JSON.parse(data);
+
+    for (const record of records) {
+        if (!record.sender) {
+            try {
+                const formattedPhone = `${record.phone}@s.whatsapp.net`;
+                await sock.sendMessage(formattedPhone, { text: record.message });
+                updateMessageRecord(record.phone, record.message);
+                console.log(`Mensaje reenviado a ${record.phone}`);
+            } catch (error) {
+                console.error(`Error al reenviar mensaje a ${record.phone}:`, error);
+            }
+        }
+    }
 });
