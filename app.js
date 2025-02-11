@@ -13,6 +13,7 @@ app.use(express.static('public'));
 
 let sock;
 let currentQR = null;
+let messageQueue = [];
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
@@ -136,16 +137,9 @@ app.post('/send-message', upload.none(), async (req, res) => {
         return res.status(429).json({ error: 'Límite de mensajes diarios alcanzado' });
     }
     
-    try {
-        const formattedPhone = `${phone}@s.whatsapp.net`;
-        await sock.sendMessage(formattedPhone, { text: message });
-        saveMessageRecord(phone, true, message);
-        res.json({ success: true, message: 'Mensaje enviado' });
-    } catch (error) {
-        console.error('Error al enviar mensaje:', error);
-        saveMessageRecord(phone, false, message);
-        res.status(500).json({ error: 'Error al enviar mensaje' });
-    }
+    messageQueue.push({ phone, message });
+    saveMessageRecord(phone, true, message);
+    res.json({ success: true, message: 'Mensaje en cola para ser enviado' });
 });
 
 // Create public directory if it doesn't exist
@@ -160,7 +154,22 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
 });
 
-// Cron job to resend messages with sender=false
+// Process message queue in batches of 4 every minute
+setInterval(async () => {
+    const batch = messageQueue.splice(0, 4);
+    for (const { phone, message } of batch) {
+        try {
+            const formattedPhone = `${phone}@s.whatsapp.net`;
+            await sock.sendMessage(formattedPhone, { text: message });
+            updateMessageRecord(phone, message);
+            console.log(`Mensaje enviado a ${phone}`);
+        } catch (error) {
+            console.error(`Error al enviar mensaje a ${phone}:`, error);
+        }
+    }
+}, 60000); // 60000 ms = 1 minuto
+
+// Cron job to resend messages with sender=false at 8 AM every day
 cron.schedule('0 8 * * *', async () => {
     console.log('Ejecutando tarea cron para reenviar mensajes no enviados');
     const filePath = path.join(__dirname, 'messageRecords.json');
@@ -171,8 +180,17 @@ cron.schedule('0 8 * * *', async () => {
     const data = fs.readFileSync(filePath);
     const records = JSON.parse(data);
 
-    for (const record of records) {
-        if (!record.sender) {
+    const unsentMessages = records.filter(record => !record.sender);
+    let index = 0;
+
+    const intervalId = setInterval(async () => {
+        const batch = unsentMessages.slice(index, index + 4);
+        if (batch.length === 0) {
+            clearInterval(intervalId);
+            return;
+        }
+
+        for (const record of batch) {
             try {
                 const formattedPhone = `${record.phone}@s.whatsapp.net`;
                 await sock.sendMessage(formattedPhone, { text: record.message });
@@ -182,5 +200,7 @@ cron.schedule('0 8 * * *', async () => {
                 console.error(`Error al reenviar mensaje a ${record.phone}:`, error);
             }
         }
-    }
+
+        index += 4;
+    }, 60000); // 60000 ms = 1 minuto
 });
