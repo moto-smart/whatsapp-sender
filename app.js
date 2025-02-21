@@ -121,7 +121,6 @@ app.get('/qr-status', (req, res) => {
 });
 
 app.post('/send-message', upload.none(), async (req, res) => {
-    console.log(req)
     console.log('Enviando mensaje:', req.body);
     const { phone, message, limitOfMessages } = req.body;
     
