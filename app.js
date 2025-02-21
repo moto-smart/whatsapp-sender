@@ -121,6 +121,7 @@ app.get('/qr-status', (req, res) => {
 });
 
 app.post('/send-message', upload.none(), async (req, res) => {
+    console.log(req)
     console.log('Enviando mensaje:', req.body);
     const { phone, message, limitOfMessages } = req.body;
     
@@ -160,9 +161,13 @@ setInterval(async () => {
     for (const { phone, message } of batch) {
         try {
             const formattedPhone = `${phone}@s.whatsapp.net`;
-            await sock.sendMessage(formattedPhone, { text: message });
-            updateMessageRecord(phone, message);
-            console.log(`Mensaje enviado a ${phone}`);
+            const result = await sock.sendMessage(formattedPhone, { text: message });
+            if (result && result.key && result.key.id) {
+                updateMessageRecord(phone, message);
+                console.log(`Mensaje enviado a ${phone}`);
+            } else {
+                console.error(`Error al enviar mensaje a ${phone}: Respuesta inesperada`, result);
+            }
         } catch (error) {
             console.error(`Error al enviar mensaje a ${phone}:`, error);
         }
@@ -193,9 +198,13 @@ cron.schedule('0 8 * * *', async () => {
         for (const record of batch) {
             try {
                 const formattedPhone = `${record.phone}@s.whatsapp.net`;
-                await sock.sendMessage(formattedPhone, { text: record.message });
-                updateMessageRecord(record.phone, record.message);
-                console.log(`Mensaje reenviado a ${record.phone}`);
+                const result = await sock.sendMessage(formattedPhone, { text: record.message });
+                if (result && result.key && result.key.id) {
+                    updateMessageRecord(record.phone, record.message);
+                    console.log(`Mensaje reenviado a ${record.phone}`);
+                } else {
+                    console.error(`Error al reenviar mensaje a ${record.phone}: Respuesta inesperada`, result);
+                }
             } catch (error) {
                 console.error(`Error al reenviar mensaje a ${record.phone}:`, error);
             }
