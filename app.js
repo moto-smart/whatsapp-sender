@@ -16,53 +16,55 @@ let currentQR = null;
 let messageQueue = [];
 
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
         generateHighQualityLinkPreview: true
-    })
+    });
     
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update
+        const { connection, lastDisconnect, qr } = update;
         
-        if(qr) {
+        if (qr) {
             currentQR = qr;
             try {
-                // Save QR code as an image file
+                // Guardar el código QR como imagen
                 await qrcode.toFile(path.join(__dirname, 'public', 'qr-code.png'), qr);
             } catch (error) {
-                console.error('Error generating QR code image:', error);
+                console.error('Error al generar la imagen del código QR:', error);
             }
         }
         
-        if(connection === 'close') {
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut
-            if(shouldReconnect) {
-                connectToWhatsApp()
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                connectToWhatsApp();
             }
-        } else if(connection === 'open') {
-            console.log('Conexión establecida')
+        } else if (connection === 'open') {
+            console.log('Conexión establecida');
             currentQR = null;
-            // Remove QR code image if exists
+            // Eliminar la imagen del código QR si existe
             const qrPath = path.join(__dirname, 'public', 'qr-code.png');
             if (fs.existsSync(qrPath)) {
                 fs.unlinkSync(qrPath);
             }
         }
-    })
+    });
     
-    sock.ev.on('creds.update', saveCreds)
+    sock.ev.on('creds.update', saveCreds);
 }
 
-// Function to save message record
-function saveMessageRecord(phone, sender, message) {
+// Función para guardar el registro de mensajes
+function saveMessageRecord(phone, sender, message, imageUrl = null, videoUrl = null) {
     const record = {
         phone,
         timestamp: new Date().toISOString(),
         sender,
-        message
+        message,
+        imageUrl,
+        videoUrl
     };
 
     const filePath = path.join(__dirname, 'messageRecords.json');
@@ -77,7 +79,7 @@ function saveMessageRecord(phone, sender, message) {
     fs.writeFileSync(filePath, JSON.stringify(records, null, 2));
 }
 
-// Function to count messages sent today
+// Función para contar los mensajes enviados hoy
 function countMessagesSentToday() {
     const filePath = path.join(__dirname, 'messageRecords.json');
     if (!fs.existsSync(filePath)) {
@@ -91,8 +93,8 @@ function countMessagesSentToday() {
     return records.filter(record => record.timestamp.startsWith(today) && record.sender).length;
 }
 
-// Function to update message record
-function updateMessageRecord(phone, message) {
+// Función para actualizar el registro de mensajes
+function updateMessageRecord(phone, message, imageUrl = null, videoUrl = null) {
     const filePath = path.join(__dirname, 'messageRecords.json');
     if (!fs.existsSync(filePath)) {
         return;
@@ -102,7 +104,13 @@ function updateMessageRecord(phone, message) {
     let records = JSON.parse(data);
 
     records = records.map(record => {
-        if (record.phone === phone && record.message === message && !record.sender) {
+        if (
+            record.phone === phone &&
+            record.message === message &&
+            record.imageUrl === imageUrl &&
+            record.videoUrl === videoUrl &&
+            !record.sender
+        ) {
             record.sender = true;
         }
         return record;
@@ -111,7 +119,7 @@ function updateMessageRecord(phone, message) {
     fs.writeFileSync(filePath, JSON.stringify(records, null, 2));
 }
 
-// Route to get QR code status
+// Ruta para obtener el estado del código QR
 app.get('/qr-status', (req, res) => {
     const qrExists = fs.existsSync(path.join(__dirname, 'public', 'qr-code.png'));
     res.json({ 
@@ -120,52 +128,80 @@ app.get('/qr-status', (req, res) => {
     });
 });
 
+// Ruta para enviar un mensaje
 app.post('/send-message', upload.none(), async (req, res) => {
     console.log('Enviando mensaje:', req.body);
-    const { phone, message, limitOfMessages } = req.body;
-    
-    if (!phone || !message) {
-        return res.status(400).json({ error: 'Se requieren tanto el teléfono como el mensaje' });
+    const { phone, message, imageUrl, videoUrl, limitOfMessages } = req.body;
+
+    // Validación básica
+    if (!phone || (!message && !imageUrl && !videoUrl)) {
+        return res.status(400).json({ error: 'Se requiere al menos un teléfono y un mensaje, imagen o video' });
     }
 
+    // Validar que no se envíen ambos: imagen y video
+    if (imageUrl && videoUrl) {
+        return res.status(400).json({ error: 'Solo se puede enviar una imagen o un video, no ambos' });
+    }
+
+    // Contar mensajes enviados hoy
     const messagesSentToday = countMessagesSentToday();
     console.log('Mensajes enviados hoy:', messagesSentToday);
     console.log('Límite de mensajes:', limitOfMessages);
-    console.log((messagesSentToday >= limitOfMessages) )
+
     if (messagesSentToday >= limitOfMessages) {
-        saveMessageRecord(phone, false, message);
+        saveMessageRecord(phone, false, message, imageUrl, videoUrl);
         return res.status(429).json({ error: 'Límite de mensajes diarios alcanzado' });
     }
-    
-    messageQueue.push({ phone, message });
-    saveMessageRecord(phone, true, message);
+
+    // Añadir mensaje a la cola
+    messageQueue.push({ phone, message, imageUrl, videoUrl });
+    saveMessageRecord(phone, true, message, imageUrl, videoUrl);
     res.json({ success: true, message: 'Mensaje en cola para ser enviado' });
 });
 
-// Create public directory if it doesn't exist
-if (!fs.existsSync(path.join(__dirname, 'public'))) {
-    fs.mkdirSync(path.join(__dirname, 'public'));
-}
-
-connectToWhatsApp();
-
-const PORT = process.env.PORT || 3003;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Servidor corriendo en el puerto ${PORT}`);
-});
-
-// Process message queue in batches of 4 every minute
+// Procesamiento de la cola de mensajes
 setInterval(async () => {
-    const batch = messageQueue.splice(0, 4);
-    for (const { phone, message } of batch) {
+    const batch = messageQueue.splice(0, 4); // Procesar 4 mensajes a la vez
+    for (const { phone, message, imageUrl, videoUrl } of batch) {
         try {
             const formattedPhone = `${phone}@s.whatsapp.net`;
-            const result = await sock.sendMessage(formattedPhone, { text: message });
-            if (result && result.key && result.key.id) {
-                updateMessageRecord(phone, message);
-                console.log(`Mensaje enviado a ${phone}`);
+
+            if (imageUrl) {
+                // Enviar imagen
+                const result = await sock.sendMessage(formattedPhone, {
+                    image: { url: imageUrl },
+                    caption: message || '' // Texto opcional junto a la imagen
+                });
+
+                if (result && result.key && result.key.id) {
+                    updateMessageRecord(phone, message, imageUrl, null);
+                    console.log(`Imagen enviada a ${phone}`);
+                } else {
+                    console.error(`Error al enviar imagen a ${phone}: Respuesta inesperada`, result);
+                }
+            } else if (videoUrl) {
+                // Enviar video
+                const result = await sock.sendMessage(formattedPhone, {
+                    video: { url: videoUrl },
+                    caption: message || '' // Texto opcional junto al video
+                });
+
+                if (result && result.key && result.key.id) {
+                    updateMessageRecord(phone, message, null, videoUrl);
+                    console.log(`Video enviado a ${phone}`);
+                } else {
+                    console.error(`Error al enviar video a ${phone}: Respuesta inesperada`, result);
+                }
             } else {
-                console.error(`Error al enviar mensaje a ${phone}: Respuesta inesperada`, result);
+                // Enviar mensaje de texto
+                const result = await sock.sendMessage(formattedPhone, { text: message });
+
+                if (result && result.key && result.key.id) {
+                    updateMessageRecord(phone, message, null, null);
+                    console.log(`Mensaje enviado a ${phone}`);
+                } else {
+                    console.error(`Error al enviar mensaje a ${phone}: Respuesta inesperada`, result);
+                }
             }
         } catch (error) {
             console.error(`Error al enviar mensaje a ${phone}:`, error);
@@ -173,7 +209,7 @@ setInterval(async () => {
     }
 }, 60000); // 60000 ms = 1 minuto
 
-// Cron job to resend messages with sender=false at 8 AM every day
+// Tarea programada para reenviar mensajes no enviados
 cron.schedule('0 8 * * *', async () => {
     console.log('Ejecutando tarea cron para reenviar mensajes no enviados');
     const filePath = path.join(__dirname, 'messageRecords.json');
@@ -197,9 +233,24 @@ cron.schedule('0 8 * * *', async () => {
         for (const record of batch) {
             try {
                 const formattedPhone = `${record.phone}@s.whatsapp.net`;
-                const result = await sock.sendMessage(formattedPhone, { text: record.message });
+                let result;
+
+                if (record.imageUrl) {
+                    result = await sock.sendMessage(formattedPhone, {
+                        image: { url: record.imageUrl },
+                        caption: record.message || ''
+                    });
+                } else if (record.videoUrl) {
+                    result = await sock.sendMessage(formattedPhone, {
+                        video: { url: record.videoUrl },
+                        caption: record.message || ''
+                    });
+                } else {
+                    result = await sock.sendMessage(formattedPhone, { text: record.message });
+                }
+
                 if (result && result.key && result.key.id) {
-                    updateMessageRecord(record.phone, record.message);
+                    updateMessageRecord(record.phone, record.message, record.imageUrl, record.videoUrl);
                     console.log(`Mensaje reenviado a ${record.phone}`);
                 } else {
                     console.error(`Error al reenviar mensaje a ${record.phone}: Respuesta inesperada`, result);
@@ -211,4 +262,16 @@ cron.schedule('0 8 * * *', async () => {
 
         index += 4;
     }, 60000); // 60000 ms = 1 minuto
+});
+
+// Crear el directorio público si no existe
+if (!fs.existsSync(path.join(__dirname, 'public'))) {
+    fs.mkdirSync(path.join(__dirname, 'public'));
+}
+
+connectToWhatsApp();
+
+const PORT = process.env.PORT || 3003;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Servidor corriendo en el puerto ${PORT}`);
 });
