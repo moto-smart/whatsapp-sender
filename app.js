@@ -6,6 +6,7 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const cron = require('node-cron');
+const Sms360Client = require('./sms360');
 
 const app = express();
 app.use(express.json());
@@ -157,6 +158,50 @@ app.post('/send-message', upload.none(), async (req, res) => {
     messageQueue.push({ phone, message, imageUrl, videoUrl });
     saveMessageRecord(phone, true, message, imageUrl, videoUrl);
     res.json({ success: true, message: 'Mensaje en cola para ser enviado' });
+});
+
+const smsClient = Sms360Client.configure(config => {
+  config.apiLogin = process.env.SMS360_API_LOGIN || 'motosmarttrans';
+  config.apiKey = process.env.SMS360_API_KEY || 'NPxk14%!';
+  config.baseUrl = process.env.SMS360_BASE_URL || 'https://dashboard.360nrs.com/api/rest/sms';
+});
+
+
+// Nuevo endpoint para enviar SMS
+app.post('/sms-message', express.json(), async (req, res) => {
+  try {
+    const { phone, message, from } = req.body;
+
+    // Validaciones básicas
+    if (!phone || !message || !from) {
+      return res.status(400).json({
+        error: 'Faltan parámetros requeridos: phone, message y from son obligatorios'
+      });
+    }
+
+    // Convertir teléfono a array si es string
+    const phonesArray = Array.isArray(phone) ? phone : [phone];
+
+    // Enviar SMS
+    const result = await smsClient.send(phonesArray, message, from);
+
+    if (result.success) {
+      res.status(200).json({
+        success: true,
+        message: 'SMS enviado correctamente',
+        details: result.data
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Error al enviar SMS',
+        details: result.error
+      });
+    }
+  } catch (error) {
+    console.error('Error en endpoint /sms-message:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
 
 // Procesamiento de la cola de mensajes
