@@ -185,7 +185,8 @@ app.post('/sms-message', express.json(), async (req, res) => {
     // Enviar SMS
     const result = await smsClient.send(phonesArray, message, from);
 
-    if (result.success) {
+    console.log(result.error === null);
+    if (result.error === null) {
       res.status(200).json({
         success: true,
         message: 'SMS enviado correctamente',
