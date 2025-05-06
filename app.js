@@ -33,14 +33,30 @@ async function connectToWhatsApp() {
             try {
                 // Guardar el código QR como imagen
                 await qrcode.toFile(path.join(__dirname, 'public', 'qr-code.png'), qr);
+                console.log('Código QR generado y guardado.');
             } catch (error) {
                 console.error('Error al generar la imagen del código QR:', error);
             }
         }
         
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Conexión cerrada. ¿Debería reconectar?', shouldReconnect);
+
             if (shouldReconnect) {
+                connectToWhatsApp(); // Reconectar automáticamente
+            } else {
+                console.log('Sesión cerrada. Eliminando credenciales y esperando escaneo de nuevo QR.');
+                currentQR = null;
+
+                // Eliminar manualmente los archivos de credenciales
+                const authDir = path.join(__dirname, 'auth_info_baileys');
+                if (fs.existsSync(authDir)) {
+                    fs.rmSync(authDir, { recursive: true, force: true });
+                    console.log('Credenciales eliminadas.');
+                }
+
+                // Reconectar para generar un nuevo QR
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
