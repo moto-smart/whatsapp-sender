@@ -27,18 +27,17 @@ async function connectToWhatsApp() {
     
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
+
         if (qr) {
-            currentQR = qr;
-            try {
-                // Guardar el código QR como imagen
-                await qrcode.toFile(path.join(__dirname, 'public', 'qr-code.png'), qr);
-                console.log('Código QR generado y guardado.');
-            } catch (error) {
-                console.error('Error al generar la imagen del código QR:', error);
-            }
+            console.log('Evento QR recibido, generando imagen...');
+            await qrcode.toFile(path.join(__dirname, 'public', 'qr-code.png'), qr);
+            console.log('Código QR generado y guardado.');
         }
-        
+
+        if (update?.error) {
+            console.error('Error en conexión:', update.error);
+        }
+
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Conexión cerrada. ¿Debería reconectar?', shouldReconnect);
@@ -55,8 +54,7 @@ async function connectToWhatsApp() {
                     fs.rmSync(authDir, { recursive: true, force: true });
                     console.log('Credenciales eliminadas.');
                 }
-
-                // Reconectar para generar un nuevo QR
+                console.log('Reconectando para generar nuevo QR...');
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
