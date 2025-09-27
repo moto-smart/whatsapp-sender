@@ -1,0 +1,50 @@
+[
+  {
+    "phone": "573138010969",
+    "timestamp": "2025-09-27T02:14:43.457Z",
+    "sender": true,
+    "message": "Hola desde Cloud API",
+    "imageUrl": null,
+    "videoUrl": null
+  },
+  {
+    "phone": "573138010969",
+    "timestamp": "2025-09-27T02:24:37.736Z",
+    "sender": true,
+    "message": "Hola desde Cloud API",
+    "imageUrl": null,
+    "videoUrl": null
+  },
+  {
+    "phone": "573138010969",
+    "timestamp": "2025-09-27T02:25:04.795Z",
+    "sender": true,
+    "message": "Hola desde Cloud 2",
+    "imageUrl": null,
+    "videoUrl": null
+  },
+  {
+    "phone": "573138010969",
+    "timestamp": "2025-09-27T02:44:46.513Z",
+    "sender": true,
+    "message": null,
+    "imageUrl": null,
+    "videoUrl": null
+  },
+  {
+    "phone": "573138010969",
+    "timestamp": "2025-09-27T03:38:57.430Z",
+    "sender": false,
+    "message": null,
+    "imageUrl": null,
+    "videoUrl": null
+  },
+  {
+    "phone": "573138010969",
+    "timestamp": "2025-09-27T04:03:48.097Z",
+    "sender": true,
+    "message": "Hola, este es un mensaje de texto normal",
+    "imageUrl": null,
+    "videoUrl": null
+  }
+]

@@ -7,6 +7,10 @@ const fs = require('fs');
 const path = require('path');
 const cron = require('node-cron');
 const Sms360Client = require('./sms360');
+const axios = require('axios');
+
+// Safe load of environment variables (optional)
+try { require('dotenv').config(); } catch (_) {}
 
 const app = express();
 app.use(express.json());
@@ -145,33 +149,34 @@ app.get('/qr-status', (req, res) => {
 
 // Ruta para enviar un mensaje
 app.post('/send-message', upload.none(), async (req, res) => {
-    console.log('Enviando mensaje:', req.body);
-    const { phone, message, imageUrl, videoUrl, limitOfMessages } = req.body;
+    try {
+        const { phone, message, limitOfMessages = 200, imageUrl, videoUrl, templateName, templateLang } = req.body;
 
-    // Validación básica
-    if (!phone || (!message && !imageUrl && !videoUrl)) {
-        return res.status(400).json({ error: 'Se requiere al menos un teléfono y un mensaje, imagen o video' });
+        if (!phone) return res.status(400).json({ error: 'phone es requerido' });
+        if (!message && !imageUrl && !videoUrl && !templateName)
+            return res.status(400).json({ error: 'Debe enviar message o imageUrl/videoUrl o templateName' });
+
+        // No permitir imagen y video simultáneamente
+        if (imageUrl && videoUrl) {
+            return res.status(400).json({ error: 'No se puede enviar imagen y video a la vez' });
+        }
+
+        const sentToday = countMessagesSentToday();
+        if (sentToday >= Number(limitOfMessages)) {
+            // Guardar como no enviado
+            saveMessageRecord(phone, false, message || null, imageUrl || null, videoUrl || null);
+            return res.status(429).json({ error: 'Límite de mensajes diarios alcanzado' });
+        }
+
+        // Encolar para envío por Cloud API; marcar como no enviado hasta confirmar
+        messageQueue.push({ phone, message: message || null, imageUrl: imageUrl || null, videoUrl: videoUrl || null, templateName: templateName || null, templateLang: templateLang || null });
+        saveMessageRecord(phone, false, message || null, imageUrl || null, videoUrl || null);
+
+        return res.json({ success: true, message: 'Mensaje en cola para ser enviado por WhatsApp Cloud API' });
+    } catch (err) {
+        console.error('Error en /send-message:', err);
+        return res.status(500).json({ error: 'Error interno' });
     }
-
-    // Validar que no se envíen ambos: imagen y video
-    if (imageUrl && videoUrl) {
-        return res.status(400).json({ error: 'Solo se puede enviar una imagen o un video, no ambos' });
-    }
-
-    // Contar mensajes enviados hoy
-    const messagesSentToday = countMessagesSentToday();
-    console.log('Mensajes enviados hoy:', messagesSentToday);
-    console.log('Límite de mensajes:', limitOfMessages);
-
-    if (messagesSentToday >= limitOfMessages) {
-        saveMessageRecord(phone, false, message, imageUrl, videoUrl);
-        return res.status(429).json({ error: 'Límite de mensajes diarios alcanzado' });
-    }
-
-    // Añadir mensaje a la cola
-    messageQueue.push({ phone, message, imageUrl, videoUrl });
-    saveMessageRecord(phone, true, message, imageUrl, videoUrl);
-    res.json({ success: true, message: 'Mensaje en cola para ser enviado' });
 });
 
 const smsClient = Sms360Client.configure(config => {
@@ -179,7 +184,6 @@ const smsClient = Sms360Client.configure(config => {
   config.apiKey = process.env.SMS360_API_KEY || 'NPxk14%!';
   config.baseUrl = process.env.SMS360_BASE_URL || 'https://dashboard.360nrs.com/api/rest/sms';
 });
-
 
 // Nuevo endpoint para enviar SMS
 app.post('/sms-message', express.json(), async (req, res) => {
@@ -219,109 +223,137 @@ app.post('/sms-message', express.json(), async (req, res) => {
   }
 });
 
+// WhatsApp Cloud API helper
+const WA_GRAPH_BASE = 'https://graph.facebook.com/v22.0';
+
+function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang = 'en_US' }) {
+  if (templateName) {
+    return {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: { name: templateName, language: { code: templateLang } }
+    };
+  }
+  if (imageUrl) {
+    return {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'image',
+      image: { link: imageUrl, caption: message || undefined }
+    };
+  }
+  if (videoUrl) {
+    return {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'video',
+      video: { link: videoUrl, caption: message || undefined }
+    };
+  }
+  return { messaging_product: 'whatsapp', to, type: 'text', text: { body: message } };
+}
+
+async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang }) {
+  const token = process.env.WHATSAPP_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  if (!token || !phoneNumberId) {
+    return { success: false, error: 'Missing WHATSAPP_TOKEN or WHATSAPP_PHONE_NUMBER_ID env vars' };
+  }
+  const url = `${WA_GRAPH_BASE}/${phoneNumberId}/messages`;
+  const payload = buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang });
+  try {
+  const { data } = await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      timeout: 15000
+    });
+  const hasMsgId = Array.isArray(data?.messages) && data.messages.length > 0;
+  return { success: hasMsgId, data };
+  } catch (err) {
+    const details = err.response?.data || err.message;
+    return { success: false, error: details };
+  }
+}
+
 // Procesamiento de la cola de mensajes
 setInterval(async () => {
-    const batch = messageQueue.splice(0, 4); // Procesar 4 mensajes a la vez
-    for (const { phone, message, imageUrl, videoUrl } of batch) {
-        try {
-            const formattedPhone = `${phone}@s.whatsapp.net`;
-
-            if (imageUrl) {
-                // Enviar imagen
-                const result = await sock.sendMessage(formattedPhone, {
-                    image: { url: imageUrl },
-                    caption: message || '' // Texto opcional junto a la imagen
-                });
-
-                if (result && result.key && result.key.id) {
-                    updateMessageRecord(phone, message, imageUrl, null);
-                    console.log(`Imagen enviada a ${phone}`);
-                } else {
-                    console.error(`Error al enviar imagen a ${phone}: Respuesta inesperada`, result);
-                }
-            } else if (videoUrl) {
-                // Enviar video
-                const result = await sock.sendMessage(formattedPhone, {
-                    video: { url: videoUrl },
-                    caption: message || '' // Texto opcional junto al video
-                });
-
-                if (result && result.key && result.key.id) {
-                    updateMessageRecord(phone, message, null, videoUrl);
-                    console.log(`Video enviado a ${phone}`);
-                } else {
-                    console.error(`Error al enviar video a ${phone}: Respuesta inesperada`, result);
-                }
-            } else {
-                // Enviar mensaje de texto
-                const result = await sock.sendMessage(formattedPhone, { text: message });
-
-                if (result && result.key && result.key.id) {
-                    updateMessageRecord(phone, message, null, null);
-                    console.log(`Mensaje enviado a ${phone}`);
-                } else {
-                    console.error(`Error al enviar mensaje a ${phone}: Respuesta inesperada`, result);
-                }
-            }
-        } catch (error) {
-            console.error(`Error al enviar mensaje a ${phone}:`, error);
-        }
+  const batch = messageQueue.splice(0, 4);
+  for (const job of batch) {
+    const { phone, message, imageUrl, videoUrl, templateName, templateLang } = job;
+    try {
+      const to = String(phone); // E164 sin +
+      const resp = await sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang });
+      if (resp.success) {
+        updateMessageRecord(phone, message || null, imageUrl || null, videoUrl || null);
+        const ids = resp.data?.messages?.map(m => m.id).join(',');
+        console.log(`WA Cloud enviado a ${phone} (ids: ${ids || 'n/a'})`);
+      } else {
+        console.error(`WA Cloud error a ${phone}:`, resp.error || resp.data);
+      }
+    } catch (e) {
+      console.error(`Fallo al enviar a ${job.phone}:`, e);
     }
-}, 60000); // 60000 ms = 1 minuto
+  }
+}, 60000);
+
+// Endpoint de verificación: ¿el número tiene WhatsApp?
+app.get('/wa-check', async (req, res) => {
+  try {
+    const to = (req.query.phone || '').trim();
+    if (!to) return res.status(400).json({ error: 'phone es requerido' });
+    const token = process.env.WHATSAPP_TOKEN;
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    if (!token || !phoneNumberId) {
+      return res.status(500).json({ error: 'Faltan WHATSAPP_TOKEN o WHATSAPP_PHONE_NUMBER_ID' });
+    }
+    const url = `${WA_GRAPH_BASE}/${phoneNumberId}/contacts`;
+    const payload = { blocking: 'wait', contacts: [String(to)], messaging_product: 'whatsapp' };
+    const { data } = await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      timeout: 15000
+    });
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.response?.data || err.message });
+  }
+});
 
 // Tarea programada para reenviar mensajes no enviados
 cron.schedule('0 8 * * *', async () => {
-    console.log('Ejecutando tarea cron para reenviar mensajes no enviados');
+  try {
+    console.log('Cron 8:00 reenvío de pendientes (sender=false)');
     const filePath = path.join(__dirname, 'messageRecords.json');
-    if (!fs.existsSync(filePath)) {
-        return;
-    }
+    if (!fs.existsSync(filePath)) return;
 
     const data = fs.readFileSync(filePath);
     const records = JSON.parse(data);
+    const unsent = records.filter(r => !r.sender);
 
-    const unsentMessages = records.filter(record => !record.sender);
     let index = 0;
-
     const intervalId = setInterval(async () => {
-        const batch = unsentMessages.slice(index, index + 4);
-        if (batch.length === 0) {
-            clearInterval(intervalId);
-            return;
+      const slice = unsent.slice(index, index + 4);
+      if (slice.length === 0) {
+        clearInterval(intervalId);
+        return;
+      }
+      for (const r of slice) {
+        try {
+          const resp = await sendWhatsAppCloud({ to: String(r.phone), message: r.message || null, imageUrl: r.imageUrl || null, videoUrl: r.videoUrl || null });
+          if (resp.success) {
+            updateMessageRecord(r.phone, r.message || null, r.imageUrl || null, r.videoUrl || null);
+            console.log(`Reenviado a ${r.phone}`);
+          } else {
+            console.error(`Error reenviando a ${r.phone}:`, resp.error);
+          }
+        } catch (e) {
+          console.error(`Excepción reenviando a ${r.phone}:`, e);
         }
-
-        for (const record of batch) {
-            try {
-                const formattedPhone = `${record.phone}@s.whatsapp.net`;
-                let result;
-
-                if (record.imageUrl) {
-                    result = await sock.sendMessage(formattedPhone, {
-                        image: { url: record.imageUrl },
-                        caption: record.message || ''
-                    });
-                } else if (record.videoUrl) {
-                    result = await sock.sendMessage(formattedPhone, {
-                        video: { url: record.videoUrl },
-                        caption: record.message || ''
-                    });
-                } else {
-                    result = await sock.sendMessage(formattedPhone, { text: record.message });
-                }
-
-                if (result && result.key && result.key.id) {
-                    updateMessageRecord(record.phone, record.message, record.imageUrl, record.videoUrl);
-                    console.log(`Mensaje reenviado a ${record.phone}`);
-                } else {
-                    console.error(`Error al reenviar mensaje a ${record.phone}: Respuesta inesperada`, result);
-                }
-            } catch (error) {
-                console.error(`Error al reenviar mensaje a ${record.phone}:`, error);
-            }
-        }
-
-        index += 4;
-    }, 60000); // 60000 ms = 1 minuto
+      }
+      index += 4;
+    }, 60000);
+  } catch (e) {
+    console.error('Error en cron:', e);
+  }
 });
 
 // Crear el directorio público si no existe
@@ -329,7 +361,10 @@ if (!fs.existsSync(path.join(__dirname, 'public'))) {
     fs.mkdirSync(path.join(__dirname, 'public'));
 }
 
-connectToWhatsApp();
+// Inicia Baileys solo si está habilitado explícitamente
+if (process.env.USE_BAILEYS === 'true') {
+  connectToWhatsApp();
+}
 
 const PORT = process.env.PORT || 3003;
 app.listen(PORT, '0.0.0.0', () => {
