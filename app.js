@@ -150,7 +150,7 @@ app.get('/qr-status', (req, res) => {
 // Ruta para enviar un mensaje
 app.post('/send-message', upload.none(), async (req, res) => {
     try {
-        const { phone, message, limitOfMessages = 200, imageUrl, videoUrl, templateName, templateLang } = req.body;
+        const { phone, message, limitOfMessages = 200, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams } = req.body;
 
         if (!phone) return res.status(400).json({ error: 'phone es requerido' });
         if (!message && !imageUrl && !videoUrl && !templateName)
@@ -169,7 +169,16 @@ app.post('/send-message', upload.none(), async (req, res) => {
         }
 
         // Encolar para envío por Cloud API; marcar como no enviado hasta confirmar
-        messageQueue.push({ phone, message: message || null, imageUrl: imageUrl || null, videoUrl: videoUrl || null, templateName: templateName || null, templateLang: templateLang || null });
+        messageQueue.push({ 
+            phone, 
+            message: message || null, 
+            imageUrl: imageUrl || null, 
+            videoUrl: videoUrl || null, 
+            templateName: templateName || null, 
+            templateLang: templateLang || null,
+            templateParams: templateParams || null,
+            buttonParams: buttonParams || null
+        });
         saveMessageRecord(phone, false, message || null, imageUrl || null, videoUrl || null);
 
         return res.json({ success: true, message: 'Mensaje en cola para ser enviado por WhatsApp Cloud API' });
@@ -226,14 +235,38 @@ app.post('/sms-message', express.json(), async (req, res) => {
 // WhatsApp Cloud API helper
 const WA_GRAPH_BASE = 'https://graph.facebook.com/v22.0';
 
-function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang = 'en_US' }) {
+function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang = 'en_US', templateParams, buttonParams }) {
   if (templateName) {
-    return {
+    const templatePayload = {
       messaging_product: 'whatsapp',
       to,
       type: 'template',
-      template: { name: templateName, language: { code: templateLang } }
+      template: { 
+        name: templateName, 
+        language: { code: templateLang },
+        components: []
+      }
     };
+    
+    // Agregar parámetros del cuerpo si existen
+    if (templateParams && templateParams.length > 0) {
+      templatePayload.template.components.push({
+        type: 'body',
+        parameters: templateParams.map(param => ({ type: 'text', text: param }))
+      });
+    }
+    
+    // Agregar parámetros de botones si existen
+    if (buttonParams && buttonParams.length > 0) {
+      templatePayload.template.components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: 0,
+        parameters: buttonParams.map(param => ({ type: 'text', text: param }))
+      });
+    }
+    
+    return templatePayload;
   }
   if (imageUrl) {
     return {
@@ -254,14 +287,17 @@ function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templat
   return { messaging_product: 'whatsapp', to, type: 'text', text: { body: message } };
 }
 
-async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang }) {
+async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams }) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   if (!token || !phoneNumberId) {
     return { success: false, error: 'Missing WHATSAPP_TOKEN or WHATSAPP_PHONE_NUMBER_ID env vars' };
   }
   const url = `${WA_GRAPH_BASE}/${phoneNumberId}/messages`;
-  const payload = buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang });
+  const payload = buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams });
+  
+  console.log('Payload enviado a WhatsApp:', JSON.stringify(payload, null, 2));
+  
   try {
   const { data } = await axios.post(url, payload, {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -270,6 +306,7 @@ async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName
   const hasMsgId = Array.isArray(data?.messages) && data.messages.length > 0;
   return { success: hasMsgId, data };
   } catch (err) {
+    console.error('Error completo de axios:', err.response?.data || err.message);
     const details = err.response?.data || err.message;
     return { success: false, error: details };
   }
@@ -279,16 +316,18 @@ async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName
 setInterval(async () => {
   const batch = messageQueue.splice(0, 4);
   for (const job of batch) {
-    const { phone, message, imageUrl, videoUrl, templateName, templateLang } = job;
+    const { phone, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams } = job;
     try {
       const to = String(phone); // E164 sin +
-      const resp = await sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang });
+      console.log(`Enviando mensaje a ${phone} con template: ${templateName}, params:`, templateParams, 'buttonParams:', buttonParams);
+      const resp = await sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams });
+      console.log(`Respuesta completa para ${phone}:`, JSON.stringify(resp, null, 2));
       if (resp.success) {
         updateMessageRecord(phone, message || null, imageUrl || null, videoUrl || null);
         const ids = resp.data?.messages?.map(m => m.id).join(',');
         console.log(`WA Cloud enviado a ${phone} (ids: ${ids || 'n/a'})`);
       } else {
-        console.error(`WA Cloud error a ${phone}:`, resp.error || resp.data);
+        console.error(`WA Cloud error a ${phone}:`, JSON.stringify(resp, null, 2));
       }
     } catch (e) {
       console.error(`Fallo al enviar a ${job.phone}:`, e);
@@ -313,6 +352,25 @@ app.get('/wa-check', async (req, res) => {
       timeout: 15000
     });
     res.json({ ok: true, data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.response?.data || err.message });
+  }
+});
+
+// Endpoint para listar templates disponibles
+app.get('/wa-templates', async (req, res) => {
+  try {
+    const token = process.env.WHATSAPP_TOKEN;
+    const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID; // Necesitas esta variable
+    if (!token || !wabaId) {
+      return res.status(500).json({ error: 'Faltan WHATSAPP_TOKEN o WHATSAPP_BUSINESS_ACCOUNT_ID' });
+    }
+    const url = `${WA_GRAPH_BASE}/${wabaId}/message_templates`;
+    const { data } = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15000
+    });
+    res.json({ ok: true, templates: data.data });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.response?.data || err.message });
   }
