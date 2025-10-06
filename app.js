@@ -150,7 +150,18 @@ app.get('/qr-status', (req, res) => {
 // Ruta para enviar un mensaje
 app.post('/send-message', upload.none(), async (req, res) => {
     try {
-        const { phone, message, limitOfMessages = 200, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams } = req.body;
+        const { phone, message, limitOfMessages = 200, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams, headerParams } = req.body;
+
+        console.log('Datos recibidos en /send-message:', {
+            phone,
+            message,
+            templateName,
+            templateLang,
+            templateParams,
+            buttonParams,
+            headerParams,
+            'req.body completo': req.body
+        });
 
         if (!phone) return res.status(400).json({ error: 'phone es requerido' });
         if (!message && !imageUrl && !videoUrl && !templateName)
@@ -177,7 +188,8 @@ app.post('/send-message', upload.none(), async (req, res) => {
             templateName: templateName || null, 
             templateLang: templateLang || null,
             templateParams: templateParams || null,
-            buttonParams: buttonParams || null
+            buttonParams: buttonParams || null,
+            headerParams: headerParams || null
         });
         saveMessageRecord(phone, false, message || null, imageUrl || null, videoUrl || null);
 
@@ -235,7 +247,7 @@ app.post('/sms-message', express.json(), async (req, res) => {
 // WhatsApp Cloud API helper
 const WA_GRAPH_BASE = 'https://graph.facebook.com/v22.0';
 
-function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang = 'en_US', templateParams, buttonParams }) {
+function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang = 'en_US', templateParams, buttonParams, headerParams }) {
   if (templateName) {
     const templatePayload = {
       messaging_product: 'whatsapp',
@@ -247,6 +259,27 @@ function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templat
         components: []
       }
     };
+    
+    // Agregar parámetros del encabezado si existen (para videos/imágenes en header)
+    if (headerParams && headerParams.length > 0) {
+      templatePayload.template.components.push({
+        type: 'header',
+        parameters: headerParams.map(param => {
+          // Si es una URL de video
+          if (param.startsWith('http') && (param.includes('.mp4') || param.includes('video'))) {
+            return { type: 'video', video: { link: param } };
+          }
+          // Si es una URL de imagen
+          else if (param.startsWith('http') && (param.includes('.jpg') || param.includes('.png') || param.includes('image'))) {
+            return { type: 'image', image: { link: param } };
+          }
+          // Si es texto
+          else {
+            return { type: 'text', text: param };
+          }
+        })
+      });
+    }
     
     // Agregar parámetros del cuerpo si existen
     if (templateParams && templateParams.length > 0) {
@@ -287,14 +320,14 @@ function buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templat
   return { messaging_product: 'whatsapp', to, type: 'text', text: { body: message } };
 }
 
-async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams }) {
+async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams, headerParams }) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   if (!token || !phoneNumberId) {
     return { success: false, error: 'Missing WHATSAPP_TOKEN or WHATSAPP_PHONE_NUMBER_ID env vars' };
   }
   const url = `${WA_GRAPH_BASE}/${phoneNumberId}/messages`;
-  const payload = buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams });
+  const payload = buildWaPayload({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams, headerParams });
   
   console.log('Payload enviado a WhatsApp:', JSON.stringify(payload, null, 2));
   
@@ -316,11 +349,11 @@ async function sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName
 setInterval(async () => {
   const batch = messageQueue.splice(0, 4);
   for (const job of batch) {
-    const { phone, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams } = job;
+    const { phone, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams, headerParams } = job;
     try {
       const to = String(phone); // E164 sin +
-      console.log(`Enviando mensaje a ${phone} con template: ${templateName}, params:`, templateParams, 'buttonParams:', buttonParams);
-      const resp = await sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams });
+      console.log(`Enviando mensaje a ${phone} con template: ${templateName}, params:`, templateParams, 'buttonParams:', buttonParams, 'headerParams:', headerParams);
+      const resp = await sendWhatsAppCloud({ to, message, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams, headerParams });
       console.log(`Respuesta completa para ${phone}:`, JSON.stringify(resp, null, 2));
       if (resp.success) {
         updateMessageRecord(phone, message || null, imageUrl || null, videoUrl || null);
