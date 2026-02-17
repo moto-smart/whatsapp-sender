@@ -3,4 +3,5 @@ auth_info_baileys/
 *.log
 *_sessions
 *qr.png
+.env
 #otra cosa

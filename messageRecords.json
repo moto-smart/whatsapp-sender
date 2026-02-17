@@ -46,5 +46,13 @@
     "message": "Hola, este es un mensaje de texto normal",
     "imageUrl": null,
     "videoUrl": null
+  },
+  {
+    "phone": "573165791973",
+    "timestamp": "2025-10-06T15:49:13.677Z",
+    "sender": true,
+    "message": null,
+    "imageUrl": null,
+    "videoUrl": null
   }
 ]
