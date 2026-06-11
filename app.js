@@ -148,10 +148,38 @@ app.get('/qr-status', (req, res) => {
     });
 });
 
+function normalizeBodyArrayField(body, fieldName) {
+  if (Array.isArray(body[fieldName])) {
+    return body[fieldName];
+  }
+
+  const indexedEntries = Object.entries(body)
+    .map(([key, value]) => {
+      const match = key.match(new RegExp(`^${fieldName}\\[(\\d+)\\]$`));
+      if (!match) return null;
+      return { index: Number(match[1]), value };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.index - right.index);
+
+  if (indexedEntries.length > 0) {
+    return indexedEntries.map(entry => entry.value);
+  }
+
+  if (body[fieldName] === undefined || body[fieldName] === null || body[fieldName] === '') {
+    return null;
+  }
+
+  return [body[fieldName]];
+}
+
 // Ruta para enviar un mensaje
-app.post('/send-message', upload.none(), async (req, res) => {
+app.post(['/send-message', '/techno/send-message'], upload.none(), async (req, res) => {
     try {
-        const { phone, message, limitOfMessages = 200, imageUrl, videoUrl, templateName, templateLang, templateParams, buttonParams, headerParams } = req.body;
+    const { phone, message, limitOfMessages = 200, imageUrl, videoUrl, templateName, templateLang } = req.body;
+    const templateParams = normalizeBodyArrayField(req.body, 'templateParams');
+    const buttonParams = normalizeBodyArrayField(req.body, 'buttonParams');
+    const headerParams = normalizeBodyArrayField(req.body, 'headerParams');
 
         console.log('Datos recibidos en /send-message:', {
             phone,
