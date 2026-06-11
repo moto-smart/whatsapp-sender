@@ -105,7 +105,8 @@ function countMessagesSentToday() {
         return 0;
     }
 
-    const data = fs.readFileSync(filePath);
+    const data = fs.readFileSync(filePath, 'utf8').trim();
+    if (!data) return 0;
     const records = JSON.parse(data);
     const today = new Date().toISOString().split('T')[0];
 
@@ -119,8 +120,8 @@ function updateMessageRecord(phone, message, imageUrl = null, videoUrl = null) {
         return;
     }
 
-    const data = fs.readFileSync(filePath);
-    let records = JSON.parse(data);
+    const data = fs.readFileSync(filePath, 'utf8').trim();
+    let records = data ? JSON.parse(data) : [];
 
     records = records.map(record => {
         if (
